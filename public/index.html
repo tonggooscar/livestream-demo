@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Stream - Arsitektur</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 { color: #00ffcc; margin-bottom: 5px; }
+        .status-box {
+            background-color: #1e1e1e;
+            padding: 10px 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #333;
+            font-size: 14px;
+        }
+        .status-value { font-weight: bold; color: #ffcc00; }
+        .container {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .video-card {
+            background-color: #1e1e1e;
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            text-align: center;
+            border: 1px solid #222;
+        }
+        video {
+            width: 320px;
+            height: 240px;
+            background-color: #000;
+            border-radius: 8px;
+            object-fit: cover;
+            margin-bottom: 10px;
+        }
+        button {
+            background-color: #00ffcc;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            font-size: 14px;
+            font-weight: bold;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: 0.2s;
+            margin: 5px;
+        }
+        button:hover { background-color: #00cc99; }
+        button:disabled { background-color: #555; color: #aaa; cursor: not-allowed; }
+    </style>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="mediasoup-client.bundle.js"></script>
+</head>
+<body>
+
+    <h1>Live Streaming (Demo SFU)</h1>
+
+    <!-- KOTAK PILIHAN KAMAR -->
+    <div id="room-selection" style="margin-bottom: 20px; padding: 15px; background: #fff; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
+        <h3>Pilih Kamar Siaran:</h3>
+        <button class="btn-room" onclick="selectRoom('Kamar-Gaming')">Kamar Gaming</button>
+        <button class="btn-room" onclick="selectRoom('Kamar-Musik')">Kamar Musik</button>
+        <button class="btn-room" onclick="selectRoom('Kamar-Ngobrol')">Kamar Ngobrol</button>
+        <p style="margin-top: 10px;">Kamar Aktif Saat Ini: <span id="active-room-text" style="font-weight: bold; color: #007bff;">Belum Memilih Kamar</span></p>
+    </div>
+
+
+    <div class="status-box">
+        Jalur Koneksi Aktif: <span id="network-status" class="status-value">Menghubungkan WebSocket...</span>
+    </div>
+
+    <div class="container">
+        <!-- Area Streamer/Penyiar -->
+        <div class="video-card">
+            <h3>Kamera Anda (Streamer)</h3>
+            <video id="localVideo" autoplay playsinline muted></video>
+            <br>
+            <button id="btnStream" onclick="startStreaming()">Mulai Live Streaming</button>
+        </div>
+
+        <!-- Area Penonton -->
+        <div class="video-card">
+            <h3>Layar Penonton (Audience)</h3>
+            <video id="remoteVideo" autoplay playsinline></video>
+            <br>
+            <button id="btnWatch" onclick="watchStreaming()" disabled>Tonton Siaran</button>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let device;
+        let sendTransport; // Khusus mengunggah video
+        let recvTransport; // Khusus mengunduh video
+        let currentVideoProducerId;
+        let currentAudioProducerId;
+
+        let currentRoomName = null;
+
+        function selectRoom(roomName) {
+            currentRoomName = roomName;
+            document.getElementById('active-room-text').innerText = roomName;
+            
+            // Beritahu server bahwa kita bergabung ke kamar ini
+            socket.emit('joinRoom', { roomName: roomName }, (response) => {
+                if (response.status === 'success') {
+                    document.getElementById('network-status').innerText = `Berhasil masuk ke ${roomName}. Silakan pilih Mulai Live atau Tonton.`;
+                    document.getElementById('network-status').style.color = "#ffff00";
+
+                    if (response.streamerData) {
+                        console.log("Menemukan streamer yang sudah online di kamar ini!");
+                        
+                        // Simpan ID produser langsung ke variabel global penonton
+                        currentVideoProducerId = response.streamerData.videoProducerId;
+                        currentAudioProducerId = response.streamerData.audioProducerId;
+
+                        // Aktifkan tombol tonton dan beri tahu user
+                        document.getElementById('btnWatch').disabled = false;
+                        document.getElementById('network-status').innerText = `Ada siaran aktif di ${roomName}! Klik tombol Tonton.`;
+                        document.getElementById('network-status').style.color = "#ffcc00";
+                    } else {
+                        // Jika kamar kosong (belum ada streamer), pastikan tombol tonton mati
+                        document.getElementById('btnWatch').disabled = true;
+                    }
+                }
+            });
+        }
+
+        socket.on('connect', () => {
+            document.getElementById('network-status').innerText = "WebSocket Terkoneksi (TCP 3000)";
+            document.getElementById('network-status').style.color = "#00ffcc";
+        });
+
+        socket.on('newStreamerAvailable', ({ videoProducerId, audioProducerId }) => {
+            console.log("Mendapat sinyal ada Streamer Baru! ID:", videoProducerId);
+            currentVideoProducerId = videoProducerId;
+            currentAudioProducerId = audioProducerId;
+            document.getElementById('btnWatch').disabled = false;
+            document.getElementById('network-status').innerText = "Ada Streamer Online! Klik tombol Tonton.";
+            document.getElementById('network-status').style.color = "#ffcc00";
+        });
+
+        
+        // PERBAIKAN TOTAL: Memaksa Browser Membuang Frame Gambar dan Reset Layar
+        socket.on('streamerLeft', () => {
+            console.log("Streamer telah offline. Menghapus frame video...");
+            
+            // 1. Matikan jalur unduhan WebRTC lokal penonton jika ada
+            if (recvTransport) {
+                recvTransport.close();
+                recvTransport = null;
+            }
+
+            // 2. Ambil elemen video penonton asli Anda
+            const remoteVideo = document.getElementById('remoteVideo');
+            if (remoteVideo) {
+                // Hentikan semua track media yang sedang berjalan di latar belakang browser
+                if (remoteVideo.srcObject) {
+                    const tracks = remoteVideo.srcObject.getTracks();
+                    tracks.forEach(track => track.stop());
+                    remoteVideo.srcObject = null; // Putus hubungan objek media
+                }
+                
+                // Paksa elemen HTML video membuang frame terakhir & memuat ulang kondisi kosong
+                remoteVideo.removeAttribute('src'); 
+                remoteVideo.load(); 
+            }
+
+            // 3. Ubah status tampilan teks agar penonton tahu siaran selesai
+            document.getElementById('network-status').innerText = "Streamer telah mengakhiri siaran langsung.";
+            document.getElementById('network-status').style.color = "#cccccc";
+            document.getElementById('btnWatch').disabled = true;
+        });
+
+
+
+        // Function 1: FUNGSI UNTUK MENYIARKAN (STREAMER)
+        async function startStreaming() {
+            if (!currentRoomName) {
+                alert("Wajib memilih Kamar Siaran terlebih dahulu sebelum memulai Live!");
+                document.getElementById('network-status').innerText = "Gagal: Anda belum memilih kamar.";
+                document.getElementById('network-status').style.color = "#ff3333";
+                return; // Hentikan fungsi di sini, jangan biarkan kamera menyala
+            }
+
+            document.getElementById('btnStream').disabled = true;
+
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+            document.getElementById('localVideo').srcObject = stream;
+
+            socket.emit('getRouterRtpCapabilities', { roomName: currentRoomName }, async (routerRtpCapabilities) => {
+                device = new mediasoupClient.Device();       
+                await device.load({ routerRtpCapabilities });
+
+                socket.emit('createWebRtcTransport', { type: 'send', roomName: currentRoomName }, async ({ params }) => {
+                    sendTransport = device.createSendTransport(params);
+
+                    sendTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+                        socket.emit('connectTransport', { type: 'send', dtlsParameters }, callback);
+                    });
+
+                    sendTransport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
+                        socket.emit('produce', { kind, rtpParameters }, ({ id }) => {
+                            callback({ id });
+                        });
+                    });
+
+                    sendTransport.on('connectionstatechange', (state) => {
+                        console.log("Status WebRTC Streamer:", state);
+                        if (state === 'connected') {
+                            document.getElementById('network-status').innerText = "STREAMING AKTIF (Berjalan via UDP - Super Cepat)";
+                            document.getElementById('network-status').style.color = "#00ffcc";
+                        }
+                    });
+
+                    const videoTrack = stream.getVideoTracks()[0];
+                    const audioTrack = stream.getAudioTracks()[0];
+                    await sendTransport.produce({ track: videoTrack });
+                    await sendTransport.produce({ track: audioTrack });
+                });
+            });
+        }
+
+        // Function 2: FUNGSI UNTUK MENONTON (AUDIENCE) - FIXED PARALEL & ANTI-DISCONNECT!
+        async function watchStreaming() {
+            document.getElementById('btnWatch').disabled = true;
+
+            if (!device) {
+                await new Promise((resolve) => {
+                    socket.emit('getRouterRtpCapabilities', { roomName: currentRoomName }, async (routerRtpCapabilities) => {
+                        device = new mediasoupClient.Device();
+                        await device.load({ routerRtpCapabilities });
+                        resolve();
+                    });
+                });
+            }
+
+            socket.emit('createWebRtcTransport', { type: 'recv', roomName: currentRoomName }, async ({ params }) => {
+                recvTransport = device.createRecvTransport(params);
+
+                recvTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+                    socket.emit('connectTransport', { type: 'recv', dtlsParameters }, callback);
+                });
+
+                // TAMBAHAN SOLUSI NO.2: Sensor Pemantau Status Jaringan WebRTC Klien Penonton
+                recvTransport.on('connectionstatechange', (state) => {
+                    console.log("Status WebRTC Penonton:", state);
+                    
+                    if (state === 'connecting') {
+                        document.getElementById('network-status').innerText = "Menghubungkan jalur media...";
+                        document.getElementById('network-status').style.color = "#ffcc00";
+                    } else if (state === 'connected') {
+                        document.getElementById('network-status').innerText = "Berhasil Menonton Aliran Video & Audio Real-time!";
+                        document.getElementById('network-status').style.color = "#00ffcc";
+                    } else if (state === 'disconnected' || state === 'failed') {
+                        document.getElementById('network-status').innerText = "Koneksi Media Terputus! Memeriksa Jaringan...";
+                        document.getElementById('network-status').style.color = "#ff3333";
+                    } else if (state === 'closed') {
+                        document.getElementById('network-status').innerText = "Siaran telah ditutup.";
+                        document.getElementById('network-status').style.color = "#cccccc";
+                    }
+                });
+
+                const remoteStream = new MediaStream();
+
+                try {
+                    // Solusi No.1: Mengambil parameter Video & Audio secara PARALEL
+                    const [videoRes, audioRes] = await Promise.all([
+                        new Promise((resolve) => socket.emit('consume', { producerId: currentVideoProducerId, rtpCapabilities: device.rtpCapabilities }, resolve)),
+                        new Promise((resolve) => socket.emit('consume', { producerId: currentAudioProducerId, rtpCapabilities: device.rtpCapabilities }, resolve))
+                    ]);
+
+                    if (videoRes.error || audioRes.error) {
+                        throw new Error(videoRes.error || audioRes.error);
+                    }
+
+                    const videoConsumer = await recvTransport.consume(videoRes.params);
+                    const audioConsumer = await recvTransport.consume(audioRes.params);
+
+                    remoteStream.addTrack(videoConsumer.track);
+                    remoteStream.addTrack(audioConsumer.track);
+
+                    // Minta server menyalakan aliran data setelah kedua track terikat
+                    socket.emit('resumeConsumer', () => {
+                        document.getElementById('remoteVideo').srcObject = remoteStream;
+                    });
+
+                } catch (err) {
+                    console.error("Gagal melakukan consume paralel pada penonton:", err);
+                    document.getElementById('network-status').innerText = "Gagal memuat media penonton.";
+                    document.getElementById('network-status').style.color = "#ff3333";
+                }
+            });
+        }
+    </script>
+
+
+</body>
+</html>
